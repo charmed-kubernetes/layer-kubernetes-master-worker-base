@@ -1,0 +1,7 @@
+cis-benchmark:
+  description: CIS Kubernetes Benchmark
+  params:
+    mode:
+      type: string
+      default: 'run'
+      description: Action mode. Defauls to 'run'.

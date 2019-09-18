@@ -1,0 +1,120 @@
+#!/usr/local/sbin/charm-env python3
+import os
+import shlex
+import subprocess
+import sys
+import tempfile
+
+from pathlib import Path
+from shutil import which
+
+from charmhelpers.core import hookenv
+from charmhelpers.fetch.giturl import GitUrlFetchHandler
+from charms.layer import snap
+from charms.reactive import is_flag_set
+
+
+BENCH_CMD = '/usr/local/bin/kube-bench'
+BENCH_PKG = 'github.com/aquasecurity/kube-bench'
+
+
+def fail(msg):
+    hookenv.action_fail(msg)
+    sys.exit()
+
+
+def install():
+    '''Install kube-bench and related configuration.
+
+    Install go if needed. Pull, build, and setup snap-based benchmark
+    configuration.
+    '''
+    go_bin = which('go')
+    if not go_bin:
+        go_bin = '/snap/bin/go'
+        snap.install('go', channel='stable', classic=True)
+
+    go_cache = os.getenv('GOCACHE', '/var/snap/go/common/cache')
+    go_path = os.getenv('GOPATH', '/var/snap/go/common')
+    env = os.environ.copy()
+    env['GOCACHE'] = go_cache
+    env['GOPATH'] = go_path
+    Path(go_path).mkdir(parents=True, exist_ok=True)
+
+    go_cmd = ('{bin} get {pkg} '
+              'github.com/golang/dep/cmd/dep'.format(bin=go_bin, pkg=BENCH_PKG))
+    try:
+        subprocess.check_call(shlex.split(go_cmd), cwd=go_path, env=env)
+    except subprocess.CalledProcessError:
+        fail('Failed to run: {}'.format(go_cmd))
+
+    go_cmd = ('{bin} build -o {out} {base}/src/{pkg}'.format(
+        bin=go_bin, out=BENCH_CMD, base=go_path, pkg=BENCH_PKG))
+    try:
+        subprocess.check_call(shlex.split(go_cmd), cwd=go_path, env=env)
+    except subprocess.CalledProcessError:
+        fail('Failed to run: {}'.format(go_cmd))
+
+    cfg_dir = '{bin}/src/{pkg}/cfg-ck'.format(bin=go_path, pkg=BENCH_PKG)
+    GitUrlFetchHandler().clone('https://github.com/charmed-kubernetes/kube-bench-config.git',
+                               dest=cfg_dir)
+
+
+def run():
+    app = hookenv.charm_name() or ''
+    version = '1.13-snap-k8s'
+    if 'master' in app:
+        app = 'master'
+    elif 'worker' in app:
+        app = 'node'
+    elif 'etcd' in app:
+        app = 'etcd'
+        version = '1.13-snap-etcd'
+
+    go_path = os.getenv('GOPATH', '/var/snap/go/common')
+    res_path = '/home/ubuntu/kube-bench-results'
+    verbose_cmd = ('{bin} --config-dir {base}/src/{pkg}/cfg-ck --version {ver} '
+                   '{app}'.format(bin=BENCH_CMD, base=go_path, pkg=BENCH_PKG, ver=version, app=app))
+    summary_cmd = ('{bin} --config-dir {base}/src/{pkg}/cfg-ck --version {ver} --noremediations '
+                   '{app}'.format(bin=BENCH_CMD, base=go_path, pkg=BENCH_PKG, ver=version, app=app))
+
+    # store full results for future operator consumption
+    Path(res_path).mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w+b', prefix='kube-bench-',
+                                     dir=res_path, delete=False) as res_file:
+        try:
+            subprocess.call(shlex.split(verbose_cmd), stdout=res_file)
+        except subprocess.CalledProcessError:
+            fail('Failed to run: {}'.format(verbose_cmd))
+        else:
+            # send fetch command to action output
+            Path(res_file.name).chmod(0o644)
+            fetch_cmd = 'juju scp {unit}:{file} `pwd`'.format(unit=hookenv.local_unit(),
+                                                              file=res_file.name)
+            hookenv.action_set({'cmd': verbose_cmd, 'fetch-cmd': fetch_cmd})
+
+    # send summary results to action output
+    try:
+        out = subprocess.check_output(shlex.split(summary_cmd), universal_newlines=True)
+    except subprocess.CalledProcessError:
+        fail('Failed to run: {}'.format(summary_cmd))
+    else:
+        # set action output
+        hookenv.action_set({'summary': out})
+
+
+if __name__ == '__main__':
+    if not (is_flag_set('kubernetes-master.snaps.installed') or
+            is_flag_set('kubernetes-worker.snaps.installed')):
+        msg = 'Kubernetes snaps are not installed'
+        fail(msg)
+
+    mode = hookenv.action_get('mode') or ''
+    if mode not in ['apply', 'run']:
+        msg = 'Invalid mode parameter: {}'.format(mode)
+        fail(msg)
+
+    if mode == 'run':
+        if not Path(BENCH_CMD).exists():
+            install()
+        run()
