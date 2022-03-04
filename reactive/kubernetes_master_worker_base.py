@@ -8,6 +8,7 @@ from charms.reactive import (
     data_changed,
     hook,
     set_flag,
+    set_state,
     when,
     when_not,
     when_any,
@@ -125,3 +126,8 @@ def write_sysctl():
             # existence.
             ignore=True,
         )
+
+
+@when("config.changed.labels")
+def handle_labels_changed():
+    set_state("node.label-config-required")
