@@ -1,7 +1,7 @@
 import pytest
 import unittest.mock as mock
 
-from reactive import kubernetes_master_worker_base
+from charms.layer import kubernetes_master_worker_base
 from charmhelpers.core import hookenv
 
 
