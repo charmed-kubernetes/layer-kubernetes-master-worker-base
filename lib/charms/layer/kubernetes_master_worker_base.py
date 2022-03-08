@@ -18,13 +18,13 @@ class LabelMaker:
         self.node = get_node_name()
 
     @staticmethod
-    def _persistent_call(cmd, retry_message):
-        deadline = time.time() + 180
+    def _retried_call(cmd, retry_msg, timeout=180):
+        deadline = time.time() + timeout
         while time.time() < deadline:
             code = call(cmd)
             if code == 0:
                 return True
-            hookenv.log(retry_message)
+            hookenv.log(retry_msg)
             time.sleep(1)
         else:
             return False
@@ -33,17 +33,17 @@ class LabelMaker:
         cmd = "kubectl --kubeconfig={0} label node {1} {2}={3} --overwrite"
         cmd = cmd.format(self.kubeconfig, self.node, label, value)
         cmd = cmd.split()
-        retry = "Failed to apply label %s=%s. Will retry." % (label, value)
-        if not self._persistent_call(cmd, retry):
-            raise self.NodeLabelError(retry)
+        retry_msg = "Failed to apply label {0}={1}. Will retry.".format(label, value)
+        if not LabelMaker._retried_call(cmd, retry_msg):
+            raise LabelMaker.NodeLabelError(retry_msg)
 
     def remove_label(self, label):
         cmd = "kubectl --kubeconfig={0} label node {1} {2}-"
         cmd = cmd.format(self.kubeconfig, self.node, label)
         cmd = cmd.split()
-        retry = "Failed to remove label {0}. Will retry.".format(label)
-        if not self._persistent_call(cmd, retry):
-            raise self.NodeLabelError(retry)
+        retry_msg = "Failed to remove label {0}. Will retry.".format(label)
+        if not LabelMaker._retried_call(cmd, retry_msg):
+            raise LabelMaker.NodeLabelError(retry_msg)
 
     def apply_node_labels(self):
         """
@@ -54,11 +54,12 @@ class LabelMaker:
         config = hookenv.config()
         user_labels = {}
         for item in config.get("labels").split(" "):
-            if "=" in item:
+            try:
                 key, val = item.split("=")
-                user_labels[key] = val
-            else:
+            except ValueError:
                 hookenv.log("Skipping malformed option: {}.".format(item))
+            else:
+                user_labels[key] = val
         # Collect the current label state.
         current_labels = db.get("current_labels") or {}
 
