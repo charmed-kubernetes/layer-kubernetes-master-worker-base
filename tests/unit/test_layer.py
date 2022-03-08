@@ -49,7 +49,7 @@ class TestNodeLabels:
         ]
         self.call.assert_has_calls(call_set, any_order=False)
 
-    def test_invalid_label(self, request):
+    def test_invalid_label(self):
         self.config = {"labels": "too=many=equals not_enough_equals"}
         label_maker = kubernetes_master_worker_base.LabelMaker("/path/to/kube/config")
         label_maker.apply_node_labels()

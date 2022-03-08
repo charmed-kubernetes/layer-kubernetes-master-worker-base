@@ -1,24 +1,31 @@
+"""Library shared between kubernetes control plane and kubernetes worker charms."""
+
 from subprocess import call
+from os import PathLike
 import time
+from typing import Union, List
 
 from charms.layer.kubernetes_common import get_node_name
 from charms.reactive import is_state
 from charmhelpers.core import hookenv, unitdata
 
-
 db = unitdata.kv()
 
 
 class LabelMaker:
+    """Use to apply labels to a kubernetes node."""
+
     class NodeLabelError(Exception):
+        """Raised when there's an error labeling a node."""
+
         pass
 
-    def __init__(self, kubeconfig):
-        self.kubeconfig = kubeconfig
+    def __init__(self, kubeconfig_path: Union[PathLike, str]):
+        self.kubeconfig_path = kubeconfig_path
         self.node = get_node_name()
 
     @staticmethod
-    def _retried_call(cmd, retry_msg, timeout=180):
+    def _retried_call(cmd: List[str], retry_msg: str, timeout: int = 180) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
             code = call(cmd)
@@ -29,26 +36,39 @@ class LabelMaker:
         else:
             return False
 
-    def set_label(self, label, value):
+    def set_label(self, label: str, value: str) -> None:
+        """
+        Add a label to this node.
+
+        @param str label: Label name to apply
+        @param str value: Value to associate with the label
+        @raises LabelMaker.NodeLabelError: if the label cannot be added
+        """
         cmd = "kubectl --kubeconfig={0} label node {1} {2}={3} --overwrite"
-        cmd = cmd.format(self.kubeconfig, self.node, label, value)
-        cmd = cmd.split()
+        cmd = cmd.format(self.kubeconfig_path, self.node, label, value)
         retry_msg = "Failed to apply label {0}={1}. Will retry.".format(label, value)
-        if not LabelMaker._retried_call(cmd, retry_msg):
+        if not LabelMaker._retried_call(cmd.split(), retry_msg):
             raise LabelMaker.NodeLabelError(retry_msg)
 
-    def remove_label(self, label):
+    def remove_label(self, label: str) -> None:
+        """
+        Remove a label to this node.
+
+        @param str label: Label name to remove
+        @raises LabelMaker.NodeLabelError: if the label cannot be removed
+        """
         cmd = "kubectl --kubeconfig={0} label node {1} {2}-"
-        cmd = cmd.format(self.kubeconfig, self.node, label)
-        cmd = cmd.split()
+        cmd = cmd.format(self.kubeconfig_path, self.node, label)
         retry_msg = "Failed to remove label {0}. Will retry.".format(label)
-        if not LabelMaker._retried_call(cmd, retry_msg):
+        if not LabelMaker._retried_call(cmd.split(), retry_msg):
             raise LabelMaker.NodeLabelError(retry_msg)
 
-    def apply_node_labels(self):
+    def apply_node_labels(self) -> None:
         """
         Parse the `labels` configuration option and apply the labels to the
         node.
+
+        @raises LabelMaker.NodeLabelError: if the label cannot be added or removed
         """
         # Get the user's configured labels.
         config = hookenv.config()
@@ -81,18 +101,21 @@ class LabelMaker:
             self.set_label("juju-application", hookenv.service_name())
 
             # Set the juju.io/cloud label.
-            if is_state("endpoint.aws.ready"):
-                self.set_label("juju.io/cloud", "ec2")
-            elif is_state("endpoint.gcp.ready"):
-                self.set_label("juju.io/cloud", "gce")
-            elif is_state("endpoint.openstack.ready"):
-                self.set_label("juju.io/cloud", "openstack")
-            elif is_state("endpoint.vsphere.ready"):
-                self.set_label("juju.io/cloud", "vsphere")
-            elif is_state("endpoint.azure.ready"):
-                self.set_label("juju.io/cloud", "azure")
+            juju_io_cloud_labels = [
+                ("aws", "ec2"),
+                ("gcp", "gce"),
+                ("openstack", "openstack"),
+                ("vsphere", "vsphere"),
+                ("azure", "azure"),
+            ]
+            for endpoint, label in juju_io_cloud_labels:
+                if is_state("endpoint.{0}.ready".format(endpoint)):
+                    self.set_label("juju.io/cloud", label)
+                    break
             else:
+                # none of the endpoints matched, remove the label
                 self.remove_label("juju.io/cloud")
-        except self.NodeLabelError as e:
-            hookenv.log(str(e))
+
+        except self.NodeLabelError as ex:
+            hookenv.log(str(ex))
             raise
